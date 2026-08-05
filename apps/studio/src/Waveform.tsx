@@ -44,7 +44,6 @@ export function Waveform({
     () => markers.filter((marker) => marker.kind === "cut" || marker.kind === "section"),
     [markers]
   );
-
   useEffect(() => {
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
@@ -185,19 +184,7 @@ function drawWaveform(
     context.fillText("Import an audio file to draw the waveform", 20, center);
   }
 
-  for (const marker of markers) {
-    if (marker.time < visibleStart || marker.time > visibleEnd) {
-      continue;
-    }
-
-    const x = xForTime(marker.time);
-    context.strokeStyle = marker.kind === "section" ? "#f2b84b" : "#45d6a3";
-    context.lineWidth = marker.kind === "section" ? 2 : 1.5;
-    context.beginPath();
-    context.moveTo(x, top);
-    context.lineTo(x, bottom);
-    context.stroke();
-  }
+  drawMarkers(context, markers, visibleStart, visibleEnd, top, bottom, xForTime);
 
   for (const tap of taps) {
     if (tap < visibleStart || tap > visibleEnd) {
@@ -224,6 +211,34 @@ function drawWaveform(
   }
 
   drawWindowLabels(context, width, height, visibleStart, visibleEnd);
+}
+
+function drawMarkers(
+  context: CanvasRenderingContext2D,
+  markers: BeatMarker[],
+  visibleStart: number,
+  visibleEnd: number,
+  top: number,
+  bottom: number,
+  xForTime: (time: number) => number
+) {
+  for (const marker of markers) {
+    if (marker.time < visibleStart || marker.time > visibleEnd) {
+      continue;
+    }
+
+    const isSection = marker.kind === "section";
+    const x = xForTime(marker.time);
+    context.strokeStyle = isSection ? "#ff2d38" : "#45d6a3";
+    context.lineWidth = isSection ? 4 : 1.5;
+    context.lineCap = isSection ? "round" : "butt";
+    context.beginPath();
+    context.moveTo(x, isSection ? top + 2 : top);
+    context.lineTo(x, isSection ? bottom - 2 : bottom);
+    context.stroke();
+  }
+
+  context.lineCap = "butt";
 }
 
 function drawRanges(

@@ -31,8 +31,11 @@ import {
   exportMarkersAsJson,
   generateMarkersFromGrid,
   learnManualPattern,
+  median,
+  roundTo,
   secondsToClock,
   type AutomatedAnalysisResult,
+  type BeatGrid,
   type BeatMarker,
   type ManualLearningResult
 } from "@beat-master/core";
@@ -97,6 +100,19 @@ export default function App() {
     () => mergeAppliedSectionMarkers(appliedSections, songSections),
     [appliedSections, songSections]
   );
+  const sectionCadenceGuess = useMemo(
+    () =>
+      selectedSection && selectedSectionTaps.length === 0
+        ? buildCadenceGuessForSection({
+            selectedSection,
+            appliedSections,
+            sections: songSections,
+            beatGrid: analysis?.beatGrid,
+            duration
+          })
+        : null,
+    [analysis?.beatGrid, appliedSections, duration, selectedSection, selectedSectionTaps.length, songSections]
+  );
   const markers = useMemo<BeatMarker[]>(() => {
     if (mode === "manual") {
       return appliedSectionMarkers.length > 0 ? appliedSectionMarkers : appliedManual?.markers ?? [];
@@ -132,13 +148,20 @@ export default function App() {
           selectedSection,
           manual,
           selectedTapCount: selectedSectionTaps.length,
+          cadenceGuess: sectionCadenceGuess,
           appliedResult: appliedSections[selectedSection.id] ?? null,
           appliedSectionCount,
           sectionCount: songSections.length
         })
       : appliedManual
         ? `${appliedManual.summary} Applied to the full beat.`
-        : buildManualDraftSummary(manual, taps.length);
+      : buildManualDraftSummary(manual, taps.length);
+  const canApplyPattern = selectedSection
+    ? Boolean(
+        (manual && selectedSectionTaps.length > 0 && manual.markers.length > 0) ||
+          (sectionCadenceGuess && sectionCadenceGuess.markers.length > 0)
+      )
+    : Boolean(manual && taps.length > 0 && manual.markers.length > 0);
   const activeGrid = mode === "manual" ? analysis?.beatGrid ?? (appliedManual ?? manual)?.beatGrid : analysis?.beatGrid;
   const activeSummary = mode === "manual" ? manualSummary : analysis?.summary;
   const phraseLabel =
@@ -317,13 +340,14 @@ export default function App() {
 
   function applyManualPattern() {
     if (selectedSection) {
-      if (!manual || selectedSectionTaps.length === 0 || manual.markers.length === 0) {
+      const result = selectedSectionTaps.length > 0 ? manual : sectionCadenceGuess;
+      if (!result || result.markers.length === 0) {
         return;
       }
 
       setAppliedSections((previous) => ({
         ...previous,
-        [selectedSection.id]: manual
+        [selectedSection.id]: result
       }));
       setMode("manual");
       return;
@@ -903,11 +927,11 @@ export default function App() {
                   <button
                     type="button"
                     className="apply-action"
-                    disabled={!manual || selectedSectionTaps.length === 0 || manual.markers.length === 0}
+                    disabled={!canApplyPattern}
                     onClick={applyManualPattern}
                   >
                     <CheckCircle2 size={18} aria-hidden="true" />
-                    Apply section
+                    {selectedSectionTaps.length === 0 && sectionCadenceGuess ? "Guess section" : "Apply section"}
                   </button>
                   <button
                     type="button"
@@ -941,6 +965,8 @@ export default function App() {
                   <span>
                     {selectedSection && appliedSections[selectedSection.id]
                       ? `${appliedSections[selectedSection.id]?.markers.length ?? 0} cuts drive ${selectedSection.label}.`
+                      : sectionCadenceGuess
+                        ? `${sectionCadenceGuess.markers.length} cadence guesses ready.`
                       : `${selectedSectionTaps.length} taps ready for this section.`}
                   </span>
                 </div>
@@ -1045,6 +1071,7 @@ interface SectionSummaryInput {
   selectedSection: SongSection;
   manual: ManualLearningResult | null;
   selectedTapCount: number;
+  cadenceGuess: ManualLearningResult | null;
   appliedResult: ManualLearningResult | null;
   appliedSectionCount: number;
   sectionCount: number;
@@ -1054,6 +1081,7 @@ function buildSectionManualSummary({
   selectedSection,
   manual,
   selectedTapCount,
+  cadenceGuess,
   appliedResult,
   appliedSectionCount,
   sectionCount
@@ -1063,10 +1091,177 @@ function buildSectionManualSummary({
   }
 
   if (!manual || selectedTapCount === 0) {
+    if (cadenceGuess) {
+      return `${selectedSection.label}: no taps yet, ${cadenceGuess.markers.length} cuts can be guessed from the previous cadence.`;
+    }
+
     return `Teach ${selectedSection.label}: tap changes for this part, then apply the section.`;
   }
 
   return `Draft ${selectedSection.label}: ${selectedTapCount} taps, ${manual.pattern.motifOffsets.length} cuts per loop ready.`;
+}
+
+interface CadenceGuessInput {
+  selectedSection: SongSection;
+  appliedSections: Record<string, ManualLearningResult>;
+  sections: SongSection[];
+  beatGrid?: BeatGrid;
+  duration: number;
+}
+
+function buildCadenceGuessForSection({
+  selectedSection,
+  appliedSections,
+  sections,
+  beatGrid,
+  duration
+}: CadenceGuessInput): ManualLearningResult | null {
+  if (!beatGrid || duration <= 0) {
+    return null;
+  }
+
+  const seedTimes = collectCadenceSeedTimes(selectedSection, appliedSections, sections);
+  const intervals = seedTimes
+    .slice(1)
+    .map((time, index) => time - (seedTimes[index] ?? 0))
+    .filter((interval) => interval >= beatGrid.beatDuration * 1.5 && interval <= 8);
+
+  if (intervals.length === 0) {
+    return null;
+  }
+
+  const spacingBeats = Math.max(1, Math.round(median(intervals) / beatGrid.beatDuration));
+  const spacing = roundTo(spacingBeats * beatGrid.beatDuration, 3);
+  const markerTimes = buildCadenceMarkerTimes(
+    selectedSection,
+    seedTimes,
+    spacing,
+    beatGrid,
+    duration
+  );
+
+  if (markerTimes.length === 0) {
+    return null;
+  }
+
+  const confidence = roundTo(clamp(0.42 + Math.min(seedTimes.length, 12) * 0.025, 0.42, 0.72), 3);
+  const markers = markerTimes.map((time, index) => {
+    const absoluteBeat = Math.max(0, Math.round((time - beatGrid.offset) / beatGrid.beatDuration));
+
+    return {
+      id: `cadence-${selectedSection.id}-${index + 1}-${Math.round(time * 1000)}`,
+      time,
+      label: `Guess ${index + 1}`,
+      kind: "cut" as const,
+      source: "manual" as const,
+      confidence,
+      bar: Math.floor(absoluteBeat / 4) + 1,
+      beat: (absoluteBeat % 4) + 1
+    };
+  });
+
+  return {
+    mode: "manual",
+    taps: [],
+    beatGrid: {
+      ...beatGrid,
+      source: "manual",
+      confidence
+    },
+    pattern: {
+      phraseBeats: spacingBeats,
+      phraseBars: roundTo(Math.max(0.25, spacingBeats / 4), 2),
+      phraseDuration: spacing,
+      offset: markerTimes[0] ?? selectedSection.start,
+      motifOffsets: [0],
+      applyStart: roundTo(selectedSection.start, 3),
+      applyEnd: roundTo(selectedSection.end, 3),
+      repeatCount: markers.length,
+      sectionCount: 1,
+      confidence,
+      tapIntervals: [spacing]
+    },
+    markers,
+    summary: `Cadence guess: ${markers.length} cuts, about ${secondsToClock(spacing)} per shot.`
+  };
+}
+
+function collectCadenceSeedTimes(
+  selectedSection: SongSection,
+  appliedSections: Record<string, ManualLearningResult>,
+  sections: SongSection[]
+): number[] {
+  const sectionById = new Map(sections.map((section) => [section.id, section]));
+  const allTimes = Object.entries(appliedSections)
+    .filter(([sectionId]) => sectionId !== selectedSection.id)
+    .flatMap(([sectionId, result]) => {
+      const section = sectionById.get(sectionId);
+      return result.markers
+        .filter((marker) => !section || marker.time >= section.start - 0.001)
+        .filter((marker) => !section || marker.time <= section.end + 0.001)
+        .map((marker) => marker.time);
+    })
+    .sort((a, b) => a - b);
+  const previousTimes = allTimes.filter((time) => time < selectedSection.start - 0.001);
+
+  return uniqueRoundedTimes(previousTimes.length >= 2 ? previousTimes : allTimes);
+}
+
+function buildCadenceMarkerTimes(
+  selectedSection: SongSection,
+  seedTimes: number[],
+  spacing: number,
+  beatGrid: BeatGrid,
+  duration: number
+): number[] {
+  const lastSeedBeforeSection = seedTimes
+    .filter((time) => time < selectedSection.start - 0.001)
+    .at(-1);
+  let cursor = lastSeedBeforeSection !== undefined ? lastSeedBeforeSection + spacing : selectedSection.start;
+
+  while (cursor < selectedSection.start - 0.001) {
+    cursor += spacing;
+  }
+
+  if (cursor - selectedSection.start > spacing * 0.45) {
+    cursor = selectedSection.start;
+  }
+
+  const times: number[] = [];
+  while (cursor <= selectedSection.end + 0.001) {
+    const snapped = snapToBeatGrid(cursor, beatGrid, duration);
+    if (snapped >= selectedSection.start - 0.001 && snapped <= selectedSection.end + 0.001) {
+      times.push(snapped);
+    }
+    cursor += spacing;
+  }
+
+  if ((times[0] ?? Number.POSITIVE_INFINITY) > selectedSection.start + beatGrid.beatDuration * 1.25) {
+    times.unshift(snapToBeatGrid(selectedSection.start, beatGrid, duration));
+  }
+
+  return uniqueRoundedTimes(times).filter(
+    (time) => time >= selectedSection.start - 0.001 && time <= selectedSection.end + 0.001
+  );
+}
+
+function snapToBeatGrid(time: number, beatGrid: BeatGrid, duration: number): number {
+  const steps = Math.round((time - beatGrid.offset) / beatGrid.beatDuration);
+  return roundTo(clamp(beatGrid.offset + steps * beatGrid.beatDuration, 0, duration), 3);
+}
+
+function uniqueRoundedTimes(times: number[]): number[] {
+  const output: number[] = [];
+
+  for (const time of [...times].sort((a, b) => a - b)) {
+    const rounded = roundTo(time, 3);
+    const previous = output[output.length - 1];
+    if (previous === undefined || Math.abs(previous - rounded) > 0.001) {
+      output.push(rounded);
+    }
+  }
+
+  return output;
 }
 
 function mergeAppliedSectionMarkers(

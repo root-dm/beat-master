@@ -1,5 +1,6 @@
 import type { BeatMarker } from "@beat-master/core";
 import { secondsToClock } from "@beat-master/core";
+import type { CSSProperties } from "react";
 
 interface VideoPreviewProps {
   currentTime: number;
@@ -13,15 +14,13 @@ interface PreviewCut {
   label: string;
 }
 
-const TRANSITION_WINDOW_SECONDS = 0.16;
-
-const SCENES = [
-  { name: "Neon street", className: "scene-neon" },
-  { name: "Studio close-up", className: "scene-studio" },
-  { name: "Night drive", className: "scene-drive" },
-  { name: "Stage lights", className: "scene-stage" },
-  { name: "Glass motion", className: "scene-glass" },
-  { name: "City roof", className: "scene-roof" }
+const CLIP_COLORS = [
+  "#45d6a3",
+  "#60b7ff",
+  "#f2b84b",
+  "#ff7a70",
+  "#9bd37a",
+  "#c58cff"
 ];
 
 export function VideoPreview({
@@ -30,67 +29,47 @@ export function VideoPreview({
   markers,
   onSeek
 }: VideoPreviewProps) {
-  const cuts = buildPreviewCuts(markers, duration);
+  const cuts = buildPreviewCuts(markers);
   const activeIndex = findActiveCutIndex(cuts, currentTime);
   const activeCut = cuts[activeIndex] ?? { time: 0, label: "Clip 1" };
   const nextCut = cuts[activeIndex + 1];
-  const scene = getScene(activeIndex);
-  const nextScene = getScene(activeIndex + 1);
-  const distanceToCut = Math.min(
-    Math.abs(currentTime - activeCut.time),
-    nextCut ? Math.abs(nextCut.time - currentTime) : Number.POSITIVE_INFINITY
-  );
-  const isTransitioning = distanceToCut <= TRANSITION_WINDOW_SECONDS;
-  const clipDuration = Math.max(0.001, (nextCut?.time ?? duration) - activeCut.time);
-  const clipProgress = Math.min(1, Math.max(0, (currentTime - activeCut.time) / clipDuration));
+  const activeEnd = nextCut?.time ?? duration;
+  const accent = CLIP_COLORS[activeIndex % CLIP_COLORS.length] ?? CLIP_COLORS[0];
+  const segments = buildTimelineSegments(cuts, duration);
 
   return (
     <section className="video-preview" aria-label="Fake video preview">
-      <div className={`preview-monitor ${scene.className}${isTransitioning ? " transitioning" : ""}`}>
-        <div className={`preview-next ${nextScene.className}`} aria-hidden="true" />
-        <div className="preview-scanlines" aria-hidden="true" />
-        <div className="preview-subject" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-        <div className="preview-overlay">
-          <strong>{scene.name}</strong>
-          <span>{activeCut.label}</span>
+      <div className="preview-monitor" style={{ "--preview-accent": accent } as CSSProperties}>
+        <div className="preview-card">
+          <span>Clip {activeIndex + 1}</span>
+          <strong>{activeCut.label}</strong>
+          <em>{secondsToClock(activeCut.time)}-{secondsToClock(activeEnd)}</em>
         </div>
         <div className="preview-timecode">{secondsToClock(currentTime)}</div>
       </div>
 
-      <div className="preview-filmstrip" aria-label="Preview clip changes">
-        {cuts.slice(0, 18).map((cut, index) => {
-          const itemScene = getScene(index);
-          return (
-            <button
-              type="button"
-              key={`${cut.label}-${cut.time}`}
-              className={index === activeIndex ? "filmstrip-item active" : "filmstrip-item"}
-              onClick={() => onSeek(cut.time)}
-              aria-label={`Seek to ${cut.label} at ${secondsToClock(cut.time)}`}
-            >
-              <span className={`filmstrip-thumb ${itemScene.className}`} />
-              <span>{index + 1}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="preview-progress" aria-label="Current preview clip progress">
-        <span style={{ width: `${clipProgress * 100}%` }} />
+      <div className="preview-timeline" aria-label="Preview clip changes">
+        {segments.map((segment, index) => (
+          <button
+            type="button"
+            key={`${segment.time}-${index}`}
+            className={index === activeIndex ? "preview-segment active" : "preview-segment"}
+            style={{
+              flexGrow: segment.weight,
+              "--segment-color": CLIP_COLORS[index % CLIP_COLORS.length] ?? CLIP_COLORS[0]
+            } as CSSProperties}
+            onClick={() => onSeek(segment.time)}
+            aria-label={`Seek to ${segment.label} at ${secondsToClock(segment.time)}`}
+          >
+            <span>{index + 1}</span>
+          </button>
+        ))}
       </div>
     </section>
   );
 }
 
-function getScene(index: number) {
-  return SCENES[index % SCENES.length] ?? SCENES[0]!;
-}
-
-function buildPreviewCuts(markers: BeatMarker[], duration: number): PreviewCut[] {
+function buildPreviewCuts(markers: BeatMarker[]): PreviewCut[] {
   const cutMarkers = markers
     .filter((marker) => marker.kind === "cut")
     .map((marker) => ({
@@ -99,12 +78,24 @@ function buildPreviewCuts(markers: BeatMarker[], duration: number): PreviewCut[]
     }))
     .sort((a, b) => a.time - b.time);
 
-  if (cutMarkers.length > 0) {
-    const hasZeroCut = cutMarkers.some((marker) => marker.time <= 0.05);
-    return hasZeroCut ? cutMarkers : [{ time: 0, label: "Clip 1" }, ...cutMarkers];
+  if (cutMarkers.length === 0) {
+    return [{ time: 0, label: "Clip 1" }];
   }
 
-  return [{ time: 0, label: "Clip 1" }];
+  const hasZeroCut = cutMarkers.some((marker) => marker.time <= 0.05);
+  return hasZeroCut ? cutMarkers : [{ time: 0, label: "Clip 1" }, ...cutMarkers];
+}
+
+function buildTimelineSegments(cuts: PreviewCut[], duration: number) {
+  return cuts.slice(0, 40).map((cut, index) => {
+    const next = cuts[index + 1];
+    const segmentDuration = Math.max(0.6, (next?.time ?? duration) - cut.time);
+
+    return {
+      ...cut,
+      weight: Math.max(1, Math.min(8, segmentDuration))
+    };
+  });
 }
 
 function findActiveCutIndex(cuts: PreviewCut[], currentTime: number): number {
