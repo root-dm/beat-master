@@ -1,0 +1,23 @@
+{
+  "name": "beat-master",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @beat-master/studio",
+    "build": "npm run build -w @beat-master/core && npm run build -w @beat-master/studio",
+    "test": "vitest run",
+    "typecheck": "npm run typecheck -w @beat-master/studio"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4"
+  }
+}
+
